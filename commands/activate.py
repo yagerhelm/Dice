@@ -1,7 +1,11 @@
 import os
 import aiosqlite
-from telegram import Update
-from telegram.ext import ContextTypes
+from aiogram import Router, F
+from aiogram.types import Message
+from aiogram.filters import Command
+from scripts.logger import log_command
+
+router = Router()
 
 DATABASE_FILE = 'database.db'
 
@@ -23,21 +27,22 @@ async def save_active_chat(chat_id, chat_title):
         await db.commit()
 
 
-async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    chat_title = update.effective_chat.title or "Без названия"
-    user_id = update.effective_user.id
+@router.message(Command("activate"))
+async def activate_handler(message: Message) -> None:
+    chat_id = str(message.chat.id)
+    chat_title = message.chat.title or "Без названия"
+    user_id = message.from_user.id
 
     try:
         async with aiosqlite.connect(DATABASE_FILE) as db:
             async with db.execute("SELECT level FROM users WHERE uid = ?", (user_id,)) as cursor:
                 row = await cursor.fetchone()
     except Exception as e:
-        await update.message.reply_text(f"❗️ Ошибка доступа к базе данных: {e}")
+        await message.reply(f"❗️ Ошибка доступа к базе данных: {e}")
         return
 
     if row is None:
-        await update.message.reply_text("❗️ Ваш аккаунт не найден в базе данных.")
+        await message.reply("❗️ Ваш аккаунт не найден в базе данных.")
         return
 
     user_level = row[0]
@@ -49,11 +54,13 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if chat_entry not in active_chats:
             await save_active_chat(chat_id, chat_title)
-            await update.message.reply_text("✅ Бот активирован в этом чате.")
+            await message.reply("✅ Бот активирован в этом чате.")
         else:
-            await update.message.reply_text("❗️ Бот уже активирован в этом чате.")
+            await message.reply("❗️ Бот уже активирован в этом чате.")
     else:
-        await update.message.reply_text("⛔️ У вас недостаточно прав для активации бота.")
+        await message.reply("⛔️ У вас недостаточно прав для активации бота.")
+    
+    await log_command(message, message.text)
         
 async def init_database():
     async with aiosqlite.connect(DATABASE_FILE) as db:

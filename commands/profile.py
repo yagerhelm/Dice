@@ -1,46 +1,71 @@
-from telegram import Update
-from telegram.ext import ContextTypes
-from scripts.utils import get_user_profile, get_user_by_uid
+from aiogram import Router, F
+from aiogram.types import Message
+from aiogram.filters import Command
+import aiosqlite
+from scripts.active_check import is_bot_active
+from scripts.logger import log_command
 
-async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+router = Router()
 
-    if context.args:
-        user_name = context.args[0]
-        
-        mentioned_user = update.message.entities[0] if update.message.entities else None
-        if mentioned_user and mentioned_user.type == 'mention':
-            user_name = update.message.text[mentioned_user.offset:mentioned_user.offset + mentioned_user.length]
-            user_name = user_name.replace('@', '')
-        
-        user_data = await get_user_profile(user_name)
+DATABASE_FILE = 'database.db'
 
-        if user_data:
-            uid, name, level, score = user_data
+@router.message(Command("profile"))
+async def profile_handler(message: Message) -> None:
+    chat_id = str(message.chat.id)
+    
+    if not await is_bot_active(chat_id):
+        await message.reply("❗️ Бот не активирован в этом чате.")
+        return
 
-            user_info = (
-                f" <b>Профиль пользователя</b> \n\n"
-                f" <b>Имя:</b> <code>{name}</code>\n"
-                f" <b>Уровень доступа:</b> <code>{level}</code>\n"
-                f" <b>Score:</b> <code>{score}</code>\n"
-            )
+    user_id = message.from_user.id
+    command_args = message.text.split()[1:] if message.text else []
 
-            await update.message.reply_text(user_info, parse_mode='HTML')
-        else:
-            await update.message.reply_text("❗️ Профиль не найден.")
-    else:
-        user_data = await get_user_by_uid(user_id)
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            if command_args:
+                # Поиск профиля другого пользователя по имени
+                user_name = command_args[0]
+                if user_name.startswith('@'):
+                    user_name = user_name[1:]
+                
+                async with db.execute(
+                    "SELECT uid, username, level, score FROM users WHERE username LIKE ?",
+                    (f"%{user_name}%",)
+                ) as cursor:
+                    user_data = await cursor.fetchone()
 
-        if user_data:
-            uid, name, level, score = user_data
+                if user_data:
+                    uid, name, level, score = user_data
+                    user_info = (
+                        f"<b>Профиль пользователя</b>\n\n"
+                        f"<b>Имя:</b> <code>{name}</code>\n"
+                        f"<b>Уровень доступа:</b> <code>{level}</code>\n"
+                        f"<b>Score:</b> <code>{score}</code>\n"
+                    )
+                    await message.reply(user_info, parse_mode='HTML')
+                else:
+                    await message.reply("❗️ Профиль не найден.")
+            else:
+                # Поиск своего профиля
+                async with db.execute(
+                    "SELECT uid, username, level, score FROM users WHERE uid = ?",
+                    (user_id,)
+                ) as cursor:
+                    user_data = await cursor.fetchone()
 
-            user_info = (
-                f" <b>Ваш профиль</b> \n\n"
-                f" <b>Имя:</b> <code>{name}</code>\n"
-                f" <b>Уровень доступа:</b> <code>{level}</code>\n"
-                f" <b>Score:</b> <code>{score}</code>\n"
-            )
-
-            await update.message.reply_text(user_info, parse_mode='HTML')
-        else:
-            await update.message.reply_text("❗️ Ваш профиль не найден.")
+                if user_data:
+                    uid, name, level, score = user_data
+                    user_info = (
+                        f"<b>Ваш профиль</b>\n\n"
+                        f"<b>Имя:</b> <code>{name}</code>\n"
+                        f"<b>Уровень доступа:</b> <code>{level}</code>\n"
+                        f"<b>Score:</b> <code>{score}</code>\n"
+                    )
+                    await message.reply(user_info, parse_mode='HTML')
+                else:
+                    await message.reply("❗️ Профиль не найден. Используйте /invite для создания профиля.")
+    
+    except Exception as e:
+        await message.reply("❗️ Произошла ошибка при получении профиля")
+    
+    await log_command(message, message.text)

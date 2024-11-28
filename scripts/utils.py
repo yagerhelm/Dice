@@ -1,51 +1,50 @@
 import aiosqlite
 
-DATABASE = 'database.db'
+DATABASE_FILE = 'database.db'
 
-async def create_user(uid: int, name: str):
-    level = 0
-    score = 0
-
-    async with aiosqlite.connect(DATABASE) as db:
-        await db.execute('''
-        INSERT INTO users (uid, name, level, score) 
-        VALUES (?, ?, ?, ?)
-        ''', 
-        (uid, name, level, score))
+async def create_user(uid: int, username: str, level: int = 1, score: int = 0):
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute("""
+            INSERT INTO users (uid, username, level, score)
+            VALUES (?, ?, ?, ?)
+        """, (uid, username, level, score))
         await db.commit()
 
-async def get_user_profile(name: str = None):
-    if name is not None:
-        print("No name or name provided")
-        return None
-
-    async with aiosqlite.connect(DATABASE) as db:
-        if name is not None:
-            async with db.execute("SELECT * FROM users WHERE name = ?", (name,)) as cursor:
-                user = await cursor.fetchone()
-                return user
+async def get_user_profile(username: str):
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        async with db.execute("""
+            SELECT uid, username, level, score 
+            FROM users 
+            WHERE username = ?
+        """, (username,)) as cursor:
+            return await cursor.fetchone()
 
 async def get_user_by_uid(uid: int):
-    if uid is not None:
-        async with aiosqlite.connect(DATABASE) as db:
-            if uid is not None:
-                async with db.execute("SELECT * FROM users WHERE uid = ?", (uid,)) as cursor:
-                    user = await cursor.fetchone()
-                    return user
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        async with db.execute("""
+            SELECT uid, username, level, score 
+            FROM users 
+            WHERE uid = ?
+        """, (uid,)) as cursor:
+            return await cursor.fetchone()
 
-async def get_user_score(uid):
-        with aiosqlite.connect(DATABASE) as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT score FROM users WHERE uid = ?', (uid,))
-            result = cursor.fetchone()
-            return result[0] if result else 0
+async def update_user_score(uid: int, new_score: int):
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute("""
+            UPDATE users 
+            SET score = ?
+            WHERE uid = ?
+        """, (new_score, uid))
+        await db.commit()
 
-async def update_user_score(uid, score):
-        with aiosqlite.connect(DATABASE) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO users (uid, score) 
-                VALUES (?, ?) 
-                ON CONFLICT(uid) DO UPDATE SET score = score + ?
-            ''', (uid, score, score))
-            conn.commit()
+async def init_user_table():
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                uid INTEGER PRIMARY KEY,
+                username TEXT NOT NULL,
+                level INTEGER DEFAULT 1,
+                score INTEGER DEFAULT 0
+            )
+        """)
+        await db.commit()

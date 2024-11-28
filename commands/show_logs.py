@@ -1,32 +1,38 @@
 import os
 import aiosqlite
-from telegram import Update
-from telegram.ext import ContextTypes
+from aiogram import Router, F
+from aiogram.types import Message
+from aiogram.filters import Command
 from datetime import datetime
 
+router = Router()
+
+DATABASE_FILE = 'database.db'
+
 async def get_user_level(user_id: int):
-    async with aiosqlite.connect('database.db') as db:
+    async with aiosqlite.connect(DATABASE_FILE) as db:
         async with db.execute("SELECT level FROM users WHERE uid = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
-async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+@router.message(Command("logs"))
+async def logs_handler(message: Message) -> None:
+    user_id = message.from_user.id
     user_level = await get_user_level(user_id)
 
     if user_level is None or user_level < 5:
-        await update.message.reply_text("❌ У вас нет доступа к этой команде.")
+        await message.reply("❌ У вас нет доступа к этой команде.")
         return
 
-    if len(context.args) != 1:
-        await update.message.reply_text("❗️ Пожалуйста, укажите дату в формате DD-MM-YYYY, например: /logs 01-10-2023.")
+    if len(message.text.split()) != 2:
+        await message.reply("❗️ Пожалуйста, укажите дату в формате DD-MM-YYYY, например: /logs 01-10-2023.")
         return
 
-    date_str = context.args[0]
+    date_str = message.text.split()[1]
     try:
         target_date = datetime.strptime(date_str, '%d-%m-%Y').date()
     except ValueError:
-        await update.message.reply_text("❗️ Неверный формат даты. Пожалуйста, используйте формат DD-MM-YYYY.")
+        await message.reply("❗️ Неверный формат даты. Пожалуйста, используйте формат DD-MM-YYYY.")
         return
 
     logs_output = f"📅 Логи за {target_date}:\n"
@@ -41,7 +47,7 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     log_found = True
 
     if not log_found:
-        await update.message.reply_text(f"⚠️ Логи за {target_date} не найдены.")
+        await message.reply(f"⚠️ Логи за {target_date} не найдены.")
     else:
         max_message_length = 4096
 
@@ -50,8 +56,8 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if split_index == -1:
                 split_index = max_message_length
             
-            await update.message.reply_text(logs_output[:split_index])
+            await message.reply(logs_output[:split_index])
             logs_output = logs_output[split_index:]
 
         if logs_output:
-            await update.message.reply_text(logs_output)
+            await message.reply(logs_output)

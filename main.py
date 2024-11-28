@@ -1,48 +1,43 @@
+import asyncio
 import tracemalloc
-
-tracemalloc.start()
-
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from my_token import TOKEN
+from scripts.database import check_database
 
-from commands.profile import profile
-from commands.activate import activate
-from commands.deactivate import deactivate
-from commands.chat_id import chat_id
-from commands.show_logs import logs
-from commands.show_active_chats import show_active_chats
-from commands.invite import invite
-from commands.dice_game import setup_handlers as setup_dice_handlers
+from commands.profile import router as profile_router
+from commands.activate import router as activate_router
+from commands.deactivate import router as deactivate_router
+from commands.chat_id import router as chat_id_router
+from commands.show_logs import router as logs_router
+from commands.show_active_chats import router as active_chats_router
+from commands.invite import router as invite_router
+from commands.dice_game import router as dice_router
 
-from scripts.logger import log_command
-from scripts.active_check import is_bot_active
+async def main():
+    # Check and initialize database if needed
+    await check_database()
+    
+    # Initialize Bot instance with a default parse mode using DefaultBotProperties
+    bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    
+    # Create Dispatcher instance
+    dp = Dispatcher()
 
-def command_wrapper(command_func):
-    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat_id = str(update.effective_chat.id)
+    # Include routers
+    dp.include_router(profile_router)
+    dp.include_router(activate_router)
+    dp.include_router(deactivate_router)
+    dp.include_router(chat_id_router)
+    dp.include_router(logs_router)
+    dp.include_router(active_chats_router)
+    dp.include_router(invite_router)
+    dp.include_router(dice_router)
 
-        if not await is_bot_active(chat_id):
-            await update.message.reply_text("❗️ Бот не активирован в этом чате.")
-            return
-
-        message = update.message.text.strip()
-        command, *args = message.split()
-        command_text = f"{command} {' '.join(args)}"
-        await command_func(update, context)
-        await log_command(update, command_text)
-    return wrapped
+    # Start bot
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("profile", command_wrapper(profile)))
-    app.add_handler(CommandHandler("id", command_wrapper(chat_id)))
-    app.add_handler(CommandHandler("activate", activate))
-    app.add_handler(CommandHandler("deactivate", command_wrapper(deactivate)))
-    app.add_handler(CommandHandler("active", command_wrapper(show_active_chats)))
-    app.add_handler(CommandHandler("logs", command_wrapper(logs)))
-    app.add_handler(CommandHandler("invite", command_wrapper(invite)))
-    setup_dice_handlers(app)
-
-    app.run_polling()
+    tracemalloc.start()
+    asyncio.run(main())
