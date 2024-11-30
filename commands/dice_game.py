@@ -1,85 +1,15 @@
 import sqlite3
 import random
+import json
 from aiogram import Router, F, types
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 from scripts.active_check import is_bot_active
 from scripts.logger import log_command
+from db import Database
 
 router = Router()
-
-active_games = {}
-game_counter = 0
-
-class DiceGame:
-    def __init__(self, creator_id, bet, max_players, message_id=None, creator_name=None, creator_username=None):
-        global game_counter
-        game_counter += 1
-        self.game_number = game_counter
-        self.creator_id = creator_id
-        self.creator_name = creator_name
-        self.creator_username = creator_username
-        self.bet = bet
-        self.max_players = max_players
-        self.players = [(creator_id, creator_name, creator_username)]
-        self.ready_players = {}
-        self.is_started = False
-        self.is_ready_check = False
-        self.results = {}
-        self.message_id = message_id
-        self.lobby_message = None
-        self.confirmation_message = None
-
-    def add_player(self, player_id, player_name, player_username):
-        if len(self.players) < self.max_players and player_id not in [p[0] for p in self.players]:
-            if player_id != self.creator_id:
-                self.players.append((player_id, player_name, player_username))
-                return True
-        return False
-
-    def remove_player(self, player_id):
-        if player_id in [p[0] for p in self.players]:
-            self.players = [p for p in self.players if p[0] != player_id]
-            if player_id in self.ready_players:
-                del self.ready_players[player_id]
-            return True
-        return False
-
-    def mark_ready(self, player_id, dice_value):
-        if player_id in [p[0] for p in self.players]:
-            self.ready_players[player_id] = dice_value
-            return True
-        return False
-
-    def is_everyone_ready(self):
-        return len(self.ready_players) == len(self.players)
-
-    def get_winner(self):
-        if not self.ready_players:
-            return []
-        max_roll = max(self.ready_players.values())
-        winners = [(pid, pname, pusername) for pid, pname, pusername in self.players 
-                  if pid in self.ready_players and self.ready_players[pid] == max_roll]
-        return winners
-
-    def get_total_prize(self):
-        total_bet = self.bet * len(self.players)
-        fee = total_bet * 0.05  # 5% комиссия
-        return total_bet - fee
-
-    def get_lobby_text(self):
-        return (f"🎲 Игра №{self.game_number}\n"
-                f"👥 Участники: {len(self.players)}/{self.max_players}\n"
-                f"💰 Ставка: {self.bet} GW\n"
-                f"Создатель: @{self.creator_username}")
-
-    def get_confirmation_text(self):
-        text = "👥 Участники:\n"
-        for player_id, _, username in self.players:
-            status = f"✅ [{self.ready_players[player_id]}]" if player_id in self.ready_players else "⏳"
-            text += f"• @{username} {status}\n"
-        text += "\nОтправьте 🎲 в ответ на это сообщение, чтобы бросить кубик"
-        return text
+db = Database()
 
 def get_game_keyboard(is_creator: bool = False) -> InlineKeyboardMarkup:
     keyboard = [
@@ -91,264 +21,231 @@ def get_game_keyboard(is_creator: bool = False) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def check_score(user_id: int, amount: int) -> bool:
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT score FROM users WHERE uid = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result and result[0] >= amount
+async def get_lobby_text(game):
+    return (f"🎲 Игра №{game.game_number}\n"
+            f"👥 Участники: {len(json.loads(game.players))}/{game.max_players}\n"
+            f"💰 Ставка: {game.bet} GW\n"
+            f"Создатель: @{game.creator_username}")
 
-async def update_score(user_id: int, amount: int):
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET score = score + ? WHERE uid = ?', (amount, user_id))
-    conn.commit()
-    conn.close()
-
-async def get_user_name(user_id: int) -> str:
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT username FROM users WHERE uid = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else "Unknown"
-
-async def check_user_exists(user_id: int) -> bool:
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT uid FROM users WHERE uid = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result is not None
+async def get_confirmation_text(game):
+    players = json.loads(game.players)
+    ready_players = json.loads(game.ready_players)
+    text = "👥 Участники:\n"
+    for player in players:
+        status = f"✅ [{ready_players.get(str(player['id']), '?')}]" if str(player['id']) in ready_players else "⏳"
+        text += f"• @{player['username']} {status}\n"
+    text += "\nОтправьте 🎲 в ответ на это сообщение, чтобы бросить кубик"
+    return text
 
 @router.message(Command("dice"))
-async def dice_command_handler(message: Message) -> None:
-    chat_id = str(message.chat.id)
-    
-    if not await is_bot_active(chat_id):
-        await message.reply("❗️ Бот не активирован в этом чате.")
-        return
-
-    args = message.text.split()[1:] if message.text else []
-    if len(args) != 2:
-        await message.reply("❗️ Использование: /dice [максимум игроков] [ставка]")
-        return
-
+@is_bot_active
+async def dice_command_handler(message: Message):
     try:
-        max_players = int(args[0])
-        bet = int(args[1])
-
-        if max_players < 2:
-            await message.reply("❗️ Минимальное количество игроков: 2")
-            return
-        
-        if bet < 1:
-            await message.reply("❗️ Минимальная ставка: 1 GW")
+        args = message.text.split()[1:]
+        if len(args) != 2:
+            await message.reply("❌ Использование: /dice <ставка> <макс. игроков>")
             return
 
-        if not await check_score(message.from_user.id, bet):
-            await message.reply("❗️ У вас недостаточно GW для такой ставки!")
+        bet = float(args[0])
+        max_players = int(args[1])
+
+        if bet <= 0 or max_players <= 1:
+            await message.reply("❌ Некорректные параметры игры")
             return
 
-        # Списываем ставку у создателя
-        await update_score(message.from_user.id, -bet)
+        user_balance = await db.get_user_balance(message.from_user.id)
+        if user_balance is None or user_balance < bet:
+            await message.reply("❌ Недостаточно средств")
+            return
 
-        game = DiceGame(
+        game_number = await db.create_dice_game(
             creator_id=message.from_user.id,
-            bet=bet,
-            max_players=max_players,
             creator_name=message.from_user.full_name,
-            creator_username=message.from_user.username
+            creator_username=message.from_user.username,
+            bet=bet,
+            max_players=max_players
         )
 
-        keyboard = get_game_keyboard(is_creator=True)
-        game_msg = await message.reply(
-            game.get_lobby_text(),
-            reply_markup=keyboard
+        lobby_message = await message.reply(
+            await get_lobby_text(await db.get_dice_game(game_number)),
+            reply_markup=get_game_keyboard()
         )
-        
-        game.lobby_message = game_msg.message_id
-        active_games[game.game_number] = game
-        await log_command(message, message.text)
+
+        await db.update_dice_game(game_number, message_id=lobby_message.message_id)
+        await db.update_balance(message.from_user.id, -bet)
 
     except ValueError:
-        await message.reply("❗️ Ставка и максимум игроков должны быть числами!")
-        return
-
-@router.callback_query(F.data == "ready")
-async def ready_callback(callback: CallbackQuery):
-    game_msg = callback.message
-    for game_number, game in active_games.items():
-        if game.lobby_message == game_msg.message_id:
-            if not game.is_ready_check:
-                game.is_ready_check = True
-                dice_value = random.randint(1, 6)
-                game.mark_ready(callback.from_user.id, dice_value)
-                
-                player_name = callback.from_user.full_name
-                await callback.message.edit_text(
-                    game.get_confirmation_text(),
-                    reply_markup=game_msg.reply_markup
-                )
-                
-                if game.is_everyone_ready():
-                    winners = game.get_winner()
-                    prize_per_winner = game.get_total_prize() // len(winners)
-                    commission = game.get_total_prize() % len(winners)
-                    
-                    for winner_id, _, _ in winners:
-                        await update_score(winner_id, prize_per_winner)
-                    
-                    result_text = (
-                        f"{game_msg.text}\n\n"
-                        f"🏆 Победители:\n"
-                    )
-                    for winner_id, winner_name, _ in winners:
-                        result_text += f"• {winner_name} (выигрыш: {prize_per_winner})\n"
-                    
-                    await callback.message.edit_text(
-                        result_text,
-                        reply_markup=None
-                    )
-                    
-                    del active_games[game_number]
-            break
-    await callback.answer()
-
-@router.callback_query(F.data == "cancel")
-async def cancel_callback(callback: CallbackQuery):
-    game_msg = callback.message
-    for game_number, game in active_games.items():
-        if game.lobby_message == game_msg.message_id:
-            if callback.from_user.id == game.creator_id:
-                await callback.message.edit_text(
-                    f"{game_msg.text}\n\n❌ Игра отменена создателем.",
-                    reply_markup=None
-                )
-                del active_games[game_number]
-            break
-    await callback.answer()
+        await message.reply("❌ Некорректные параметры игры")
+    except Exception as e:
+        print(f"Error in dice_command_handler: {e}")
+        await message.reply("❌ Произошла ошибка при создании игры")
 
 @router.callback_query(F.data == "join")
 async def join_callback(callback: CallbackQuery):
-    game_msg = callback.message
-    
-    # Проверяем наличие аккаунта
-    if not await check_user_exists(callback.from_user.id):
-        await callback.answer("❗️ У вас нет аккаунта! Создайте аккаунт командой /invite", show_alert=True)
-        return
-        
-    # Проверяем достаточно ли GW для ставки
-    for game_number, game in active_games.items():
-        if game.lobby_message == game_msg.message_id:
-            if not await check_score(callback.from_user.id, game.bet):
-                await callback.answer(f"❗️ У вас недостаточно GW для ставки {game.bet}!", show_alert=True)
-                return
-                
-            if game.add_player(callback.from_user.id, callback.from_user.full_name, callback.from_user.username):
-                # Списываем ставку у игрока
-                await update_score(callback.from_user.id, -game.bet)
-                
-                await callback.message.edit_text(
-                    game.get_lobby_text(),
-                    reply_markup=game_msg.reply_markup
-                )
-                
-                # Если достигнуто максимальное количество игроков, запускаем игру
-                if len(game.players) >= game.max_players:
-                    confirmation_msg = await callback.message.reply(
-                        game.get_confirmation_text(),
-                        reply_markup=None
-                    )
-                    game.confirmation_message = confirmation_msg.message_id
-                    await callback.answer("Игра автоматически запущена - набрано максимальное количество игроков!")
-                else:
-                    await callback.answer("Вы успешно присоединились к игре!")
-            else:
-                await callback.answer("Вы не можете присоединиться к этой игре.")
-            break
-    if not game_msg:
-        await callback.answer("Игра не найдена.")
+    try:
+        game = await db.get_dice_game(callback.message.message_id)
+        if not game:
+            await callback.answer("❌ Игра не найдена")
+            return
+
+        if game.is_started:
+            await callback.answer("❌ Игра уже началась")
+            return
+
+        players = json.loads(game.players)
+        if len(players) >= game.max_players:
+            await callback.answer("❌ Достигнуто максимальное количество игроков")
+            return
+
+        if any(p['id'] == callback.from_user.id for p in players):
+            await callback.answer("❌ Вы уже в игре")
+            return
+
+        user_balance = await db.get_user_balance(callback.from_user.id)
+        if user_balance is None or user_balance < game.bet:
+            await callback.answer("❌ Недостаточно средств")
+            return
+
+        players.append({
+            "id": callback.from_user.id,
+            "name": callback.from_user.full_name,
+            "username": callback.from_user.username
+        })
+
+        await db.update_dice_game(game.game_number, players=json.dumps(players))
+        await db.update_balance(callback.from_user.id, -game.bet)
+
+        await callback.message.edit_text(
+            await get_lobby_text(await db.get_dice_game(game.game_number)),
+            reply_markup=get_game_keyboard()
+        )
+        await callback.answer()
+
+    except Exception as e:
+        print(f"Error in join_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
 
 @router.callback_query(F.data == "leave")
 async def leave_callback(callback: CallbackQuery):
-    game_msg = callback.message
-    for game_number, game in active_games.items():
-        if game.lobby_message == game_msg.message_id:
-            if game.remove_player(callback.from_user.id):
-                await callback.message.edit_text(
-                    game.get_lobby_text(),
-                    reply_markup=game_msg.reply_markup
-                )
-            else:
-                await callback.answer("Вы не можете покинуть игру, которую вы создали.")
-            break
-    await callback.answer()
+    try:
+        game = await db.get_dice_game(callback.message.message_id)
+        if not game or game.is_started:
+            await callback.answer("❌ Невозможно покинуть игру")
+            return
+
+        players = json.loads(game.players)
+        player = next((p for p in players if p['id'] == callback.from_user.id), None)
+        if not player:
+            await callback.answer("❌ Вы не участвуете в игре")
+            return
+
+        players.remove(player)
+        if not players:
+            await db.delete_dice_game(game.game_number)
+            await callback.message.delete()
+        else:
+            await db.update_dice_game(game.game_number, players=json.dumps(players))
+            await callback.message.edit_text(
+                await get_lobby_text(await db.get_dice_game(game.game_number)),
+                reply_markup=get_game_keyboard()
+            )
+
+        await db.update_balance(callback.from_user.id, game.bet)
+        await callback.answer()
+
+    except Exception as e:
+        print(f"Error in leave_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
 
 @router.callback_query(F.data == "start_game")
 async def start_game_callback(callback: CallbackQuery):
-    game_msg = callback.message
-    for game_number, game in active_games.items():
-        if game.lobby_message == game_msg.message_id:
-            if callback.from_user.id == game.creator_id:
-                confirmation_msg = await callback.message.reply(
-                    game.get_confirmation_text(),
-                    reply_markup=None
-                )
-                game.confirmation_message = confirmation_msg.message_id
-            else:
-                await callback.answer("Только создатель игры может начать игру.")
-            break
-    await callback.answer()
+    try:
+        game = await db.get_dice_game(callback.message.message_id)
+        if not game or game.is_started:
+            await callback.answer("❌ Невозможно начать игру")
+            return
+
+        if callback.from_user.id != game.creator_id:
+            await callback.answer("❌ Только создатель может начать игру")
+            return
+
+        players = json.loads(game.players)
+        if len(players) < 2:
+            await callback.answer("❌ Недостаточно игроков")
+            return
+
+        await db.update_dice_game(game.game_number, 
+                                is_started=1,
+                                is_ready_check=1)
+
+        confirmation_message = await callback.message.reply(
+            await get_confirmation_text(await db.get_dice_game(game.game_number))
+        )
+        await callback.answer()
+
+    except Exception as e:
+        print(f"Error in start_game_callback: {e}")
+        await callback.answer("❌ Произошла ошибка")
 
 @router.message(F.dice)
 async def handle_dice(message: Message):
-    if not message.reply_to_message:
-        return
+    try:
+        if not message.reply_to_message:
+            return
 
-    for game_number, game in active_games.items():
-        if game.confirmation_message == message.reply_to_message.message_id:
-            if message.from_user.id in [p[0] for p in game.players]:
-                if message.from_user.id not in game.ready_players:
-                    game.mark_ready(message.from_user.id, message.dice.value)
-                    
-                    await message.reply_to_message.edit_text(
-                        game.get_confirmation_text()
-                    )
+        game = await db.get_dice_game(message.reply_to_message.message_id)
+        if not game or not game.is_ready_check:
+            return
 
-                    if game.is_everyone_ready():
-                        winners = game.get_winner()
-                        prize_per_winner = game.get_total_prize() // len(winners)
+        players = json.loads(game.players)
+        if not any(p['id'] == message.from_user.id for p in players):
+            await message.reply("❌ Вы не участвуете в этой игре")
+            return
 
-                        # Формируем текст с результатами
-                        result_text = "🎲 Результаты игры:\n\n"
-                        for player_id, _, username in game.players:
-                            result_text += f"@{username}: {game.ready_players[player_id]}\n"
-                        
-                        if len(winners) > 1:
-                            result_text += f"\n🏆 Ничья! Победители:\n"
-                            for _, _, username in winners:
-                                result_text += f"@{username}\n"
-                        else:
-                            _, _, winner_username = winners[0]
-                            result_text += f"\n🏆 Победитель: @{winner_username}"
-                        
-                        result_text += f"\n💰 Выигрыш: {prize_per_winner} GW"
+        ready_players = json.loads(game.ready_players)
+        if str(message.from_user.id) in ready_players:
+            await message.reply("❌ Вы уже бросили кубик")
+            return
 
-                        await message.reply_to_message.reply(result_text)
+        ready_players[str(message.from_user.id)] = message.dice.value
+        await db.update_dice_game(game.game_number, ready_players=json.dumps(ready_players))
 
-                        # Выдаем награду победителям
-                        for winner_id, _, _ in winners:
-                            await update_score(winner_id, prize_per_winner)
+        if len(ready_players) == len(players):
+            max_roll = max(ready_players.values())
+            winners = [p for p in players if ready_players[str(p['id'])] == max_roll]
+            
+            total_prize = game.bet * len(players)
+            fee = total_prize * 0.05
+            prize_pool = total_prize - fee
+            prize_per_winner = prize_pool / len(winners)
 
-                        # Удаляем игру
-                        del active_games[game_number]
-                else:
-                    await message.reply("❗️ Вы уже бросили кубик!")
-            else:
-                await message.reply("❗️ Вы не участвуете в этой игре!")
-            break
+            for winner in winners:
+                await db.update_balance(winner['id'], prize_per_winner)
+
+            await db.update_dice_game(
+                game.game_number,
+                is_ready_check=0,
+                total_prize=prize_pool,
+                winners=json.dumps(winners)
+            )
+
+            winners_text = ", ".join(f"@{w['username']} [{ready_players[str(w['id'])]}]" for w in winners)
+            result_text = (
+                f"🎲 Игра №{game.game_number} завершена!\n"
+                f"💰 Призовой фонд: {prize_pool:.2f} GW\n"
+                f"👑 Победители: {winners_text}\n"
+                f"💎 Выигрыш каждому: {prize_per_winner:.2f} GW"
+            )
+            await message.reply(result_text)
+
+        else:
+            await message.reply_to_message.edit_text(
+                await get_confirmation_text(await db.get_dice_game(game.game_number))
+            )
+
+    except Exception as e:
+        print(f"Error in handle_dice: {e}")
+        await message.reply("❌ Произошла ошибка")
 
 async def init_game_history_db():
     conn = sqlite3.connect('database.db')
