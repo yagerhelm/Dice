@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from my_token import TOKEN
-from scripts.database import check_database
+from scripts.database import Database
 
 from commands.profile import router as profile_router
 from commands.activate import router as activate_router
@@ -17,7 +17,7 @@ from commands.dice_game import router as dice_router
 
 async def main():
     # Check and initialize database if needed
-    await check_database()
+    await Database.initialize()
     
     # Initialize Bot instance with a default parse mode using DefaultBotProperties
     bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))

@@ -1,43 +1,35 @@
-import aiosqlite
-from telegram import Update
-from telegram.ext import ContextTypes
+from functools import wraps
+from aiogram.types import Message
+from scripts.database import Database
 
 DATABASE_FILE = 'database.db'
 
 async def is_bot_active(chat_id: str) -> bool:
     try:
-        async with aiosqlite.connect(DATABASE_FILE) as db:
-            async with db.execute("SELECT chat_id FROM active_chats WHERE chat_id = ?", (chat_id,)) as cursor:
-                row = await cursor.fetchone()
-                return row is not None
+        active_chats = await Database.get_active_chats()
+        return any(chat['chat_id'] == chat_id for chat in active_chats)
     except Exception:
         return False
 
-async def load_active_chats(chat_id: str) -> bool:
-    return await is_bot_active(chat_id)
+def check_bot_active(func):
+    @wraps(func)
+    async def wrapper(message: Message, *args, **kwargs):
+        chat_id = str(message.chat.id)
+        if not await is_bot_active(chat_id):
+            await message.reply("❗️ Бот не активирован в этом чате.")
+            return
+        return await func(message, *args, **kwargs)
+    return wrapper
 
-async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    chat_title = update.effective_chat.title or "Без названия"
-    user_id = update.effective_user.id
+async def load_active_chats() -> set:
+    active_chats = set()
+    chats = await Database.get_active_chats()
+    for chat in chats:
+        active_chats.add(f"{chat['chat_id']}:{chat['chat_title']}")
+    return active_chats
 
-    async with aiosqlite.connect(DATABASE_FILE) as db:
-        async with db.execute("SELECT level FROM users WHERE uid = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-    
-    if row is None:
-        await update.message.reply_text("❗️ Ваш аккаунт не найден в базе данных.")
-        return
+async def save_active_chat(chat_id: str, chat_title: str) -> None:
+    await Database.add_active_chat(chat_id, chat_title)
 
-    user_level = row[0]
-
-    if user_level >= 5:
-        if await is_bot_active(chat_id):
-            await update.message.reply_text("❗️ Бот уже активирован в этом чате.")
-        else:
-            async with aiosqlite.connect(DATABASE_FILE) as db:
-                await db.execute("INSERT INTO active_chats (chat_id, chat_title) VALUES (?, ?)", (chat_id, chat_title))
-                await db.commit()
-            await update.message.reply_text("✅ Бот активирован в этом чате.")
-    else:
-        await update.message.reply_text("⛔️ У вас недостаточно прав для активации бота.")
+async def remove_active_chat(chat_id: str) -> None:
+    await Database.remove_active_chat(chat_id)

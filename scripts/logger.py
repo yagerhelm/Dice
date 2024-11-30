@@ -1,21 +1,15 @@
-import aiosqlite
 from datetime import datetime
 from aiogram.types import Message
+from scripts.database import Database
 
 DATABASE_FILE = 'database.db'
 
 async def log_command(message: Message, command_text: str) -> None:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     user_id = message.from_user.id
     chat_id = str(message.chat.id)
     
     try:
-        async with aiosqlite.connect(DATABASE_FILE) as db:
-            await db.execute("""
-                INSERT INTO logs (timestamp, user_id, chat_id, command)
-                VALUES (?, ?, ?, ?)
-            """, (timestamp, user_id, chat_id, command_text))
-            await db.commit()
+        await Database.add_log(user_id, chat_id, command_text)
     except Exception as e:
         print(f"Error logging command: {e}")
 
